@@ -1,6 +1,8 @@
 package cn.hutool.crypto;
 
-import cn.hutool.core.util.HexUtil;
+import cn.hutool.core.io.IORuntimeException;
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
 import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.crypto.params.AsymmetricKeyParameter;
 import org.bouncycastle.crypto.params.ECDomainParameters;
@@ -14,9 +16,9 @@ import org.bouncycastle.jce.spec.ECNamedCurveSpec;
 import org.bouncycastle.jce.spec.ECParameterSpec;
 import org.bouncycastle.math.ec.ECCurve;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigInteger;
-import java.security.GeneralSecurityException;
-import java.security.InvalidKeyException;
 import java.security.Key;
 import java.security.PrivateKey;
 import java.security.PublicKey;
@@ -43,15 +45,28 @@ public class BCUtil {
 	}
 
 	/**
-	 * 编码压缩EC公钥（基于BouncyCastle）<br>
+	 * 编码压缩EC公钥（基于BouncyCastle），即Q值<br>
 	 * 见：https://www.cnblogs.com/xinzhao/p/8963724.html
 	 *
 	 * @param publicKey {@link PublicKey}，必须为org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPublicKey
-	 * @return 压缩得到的X
+	 * @return 压缩得到的Q
 	 * @since 4.4.4
 	 */
 	public static byte[] encodeECPublicKey(PublicKey publicKey) {
-		return ((BCECPublicKey) publicKey).getQ().getEncoded(true);
+		return encodeECPublicKey(publicKey, true);
+	}
+
+	/**
+	 * 编码压缩EC公钥（基于BouncyCastle），即Q值<br>
+	 * 见：https://www.cnblogs.com/xinzhao/p/8963724.html
+	 *
+	 * @param publicKey {@link PublicKey}，必须为org.bouncycastle.jcajce.provider.asymmetric.ec.BCECPublicKey
+	 * @param isCompressed 是否压缩
+	 * @return 得到的Q
+	 * @since 5.5.9
+	 */
+	public static byte[] encodeECPublicKey(PublicKey publicKey, boolean isCompressed) {
+		return ((BCECPublicKey) publicKey).getQ().getEncoded(isCompressed);
 	}
 
 	/**
@@ -82,12 +97,7 @@ public class BCUtil {
 
 		// 根据曲线恢复公钥格式
 		final ECNamedCurveSpec ecSpec = new ECNamedCurveSpec(curveName, curve, x9ECParameters.getG(), x9ECParameters.getN());
-
-		try {
-			return KeyUtil.getKeyFactory("EC").generatePublic(new ECPublicKeySpec(point, ecSpec));
-		} catch (GeneralSecurityException e) {
-			throw new CryptoException(e);
-		}
+		return KeyUtil.generatePublicKey("EC", new ECPublicKeySpec(point, ecSpec));
 	}
 
 	/**
@@ -140,27 +150,17 @@ public class BCUtil {
 	 * @since 5.2.0
 	 */
 	public static AsymmetricKeyParameter toParams(Key key) {
-		try {
-			if (key instanceof PrivateKey) {
-				return ECUtil.generatePrivateKeyParameter((PrivateKey) key);
-			} else if (key instanceof PublicKey) {
-				return ECUtil.generatePublicKeyParameter((PublicKey) key);
-			}
-		} catch (InvalidKeyException e) {
-			throw new CryptoException(e);
-		}
-
-		return null;
+		return ECKeyUtil.toParams(key);
 	}
 
 	/**
 	 * 转换为 ECPrivateKeyParameters
 	 *
-	 * @param dHex 私钥d值16进制字符串
+	 * @param d 私钥d值
 	 * @return ECPrivateKeyParameters
 	 */
-	public static ECPrivateKeyParameters toSm2Params(String dHex) {
-		return toSm2Params(HexUtil.toBigInteger(dHex));
+	public static ECPrivateKeyParameters toSm2Params(String d) {
+		return ECKeyUtil.toSm2PrivateParams(d);
 	}
 
 	/**
@@ -171,7 +171,7 @@ public class BCUtil {
 	 * @return ECPrivateKeyParameters
 	 */
 	public static ECPrivateKeyParameters toParams(String dHex, ECDomainParameters domainParameters) {
-		return toParams(new BigInteger(dHex, 16), domainParameters);
+		return ECKeyUtil.toPrivateParams(dHex, domainParameters);
 	}
 
 	/**
@@ -181,7 +181,7 @@ public class BCUtil {
 	 * @return ECPrivateKeyParameters
 	 */
 	public static ECPrivateKeyParameters toSm2Params(byte[] d) {
-		return toSm2Params(new BigInteger(d));
+		return ECKeyUtil.toSm2PrivateParams(d);
 	}
 
 	/**
@@ -192,7 +192,7 @@ public class BCUtil {
 	 * @return ECPrivateKeyParameters
 	 */
 	public static ECPrivateKeyParameters toParams(byte[] d, ECDomainParameters domainParameters) {
-		return toParams(new BigInteger(d), domainParameters);
+		return ECKeyUtil.toPrivateParams(d, domainParameters);
 	}
 
 	/**
@@ -202,7 +202,7 @@ public class BCUtil {
 	 * @return ECPrivateKeyParameters
 	 */
 	public static ECPrivateKeyParameters toSm2Params(BigInteger d) {
-		return toParams(d, SmUtil.SM2_DOMAIN_PARAMS);
+		return ECKeyUtil.toSm2PrivateParams(d);
 	}
 
 	/**
@@ -213,10 +213,7 @@ public class BCUtil {
 	 * @return ECPrivateKeyParameters
 	 */
 	public static ECPrivateKeyParameters toParams(BigInteger d, ECDomainParameters domainParameters) {
-		if(null == d){
-			return null;
-		}
-		return new ECPrivateKeyParameters(d, domainParameters);
+		return ECKeyUtil.toPrivateParams(d, domainParameters);
 	}
 
 	/**
@@ -228,10 +225,7 @@ public class BCUtil {
 	 * @return ECPublicKeyParameters
 	 */
 	public static ECPublicKeyParameters toParams(BigInteger x, BigInteger y, ECDomainParameters domainParameters) {
-		if(null == x || null == y){
-			return null;
-		}
-		return toParams(x.toByteArray(), y.toByteArray(), domainParameters);
+		return ECKeyUtil.toPublicParams(x, y, domainParameters);
 	}
 
 	/**
@@ -242,7 +236,7 @@ public class BCUtil {
 	 * @return ECPublicKeyParameters
 	 */
 	public static ECPublicKeyParameters toSm2Params(String xHex, String yHex) {
-		return toParams(xHex, yHex, SmUtil.SM2_DOMAIN_PARAMS);
+		return ECKeyUtil.toSm2PublicParams(xHex, yHex);
 	}
 
 	/**
@@ -254,7 +248,7 @@ public class BCUtil {
 	 * @return ECPublicKeyParameters
 	 */
 	public static ECPublicKeyParameters toParams(String xHex, String yHex, ECDomainParameters domainParameters) {
-		return toParams(HexUtil.decodeHex(xHex), HexUtil.decodeHex(yHex), domainParameters);
+		return ECKeyUtil.toPublicParams(xHex, yHex, domainParameters);
 	}
 
 	/**
@@ -265,7 +259,7 @@ public class BCUtil {
 	 * @return ECPublicKeyParameters
 	 */
 	public static ECPublicKeyParameters toSm2Params(byte[] xBytes, byte[] yBytes) {
-		return toParams(xBytes, yBytes, SmUtil.SM2_DOMAIN_PARAMS);
+		return ECKeyUtil.toSm2PublicParams(xBytes, yBytes);
 	}
 
 	/**
@@ -277,13 +271,7 @@ public class BCUtil {
 	 * @return ECPublicKeyParameters
 	 */
 	public static ECPublicKeyParameters toParams(byte[] xBytes, byte[] yBytes, ECDomainParameters domainParameters) {
-		if(null == xBytes || null == yBytes){
-			return null;
-		}
-		final ECCurve curve = domainParameters.getCurve();
-		final int curveLength = getCurveLength(curve);
-		final byte[] encodedPubKey = encodePoint(xBytes, yBytes, curveLength);
-		return new ECPublicKeyParameters(curve.decodePoint(encodedPubKey), domainParameters);
+		return ECKeyUtil.toPublicParams(xBytes, yBytes, domainParameters);
 	}
 
 	/**
@@ -293,14 +281,7 @@ public class BCUtil {
 	 * @return {@link ECPublicKeyParameters}或null
 	 */
 	public static ECPublicKeyParameters toParams(PublicKey publicKey) {
-		if (null == publicKey) {
-			return null;
-		}
-		try {
-			return (ECPublicKeyParameters) ECUtil.generatePublicKeyParameter(publicKey);
-		} catch (InvalidKeyException e) {
-			throw new CryptoException(e);
-		}
+		return ECKeyUtil.toPublicParams(publicKey);
 	}
 
 	/**
@@ -310,67 +291,63 @@ public class BCUtil {
 	 * @return {@link ECPrivateKeyParameters}或null
 	 */
 	public static ECPrivateKeyParameters toParams(PrivateKey privateKey) {
-		if (null == privateKey) {
-			return null;
-		}
+		return ECKeyUtil.toPrivateParams(privateKey);
+	}
+
+	/**
+	 * 读取PEM格式的私钥
+	 *
+	 * @param pemStream pem流
+	 * @return {@link PrivateKey}
+	 * @since 5.2.5
+	 * @see PemUtil#readPemPrivateKey(InputStream)
+	 */
+	public static PrivateKey readPemPrivateKey(InputStream pemStream) {
+		return PemUtil.readPemPrivateKey(pemStream);
+	}
+
+	/**
+	 * 读取PEM格式的公钥
+	 *
+	 * @param pemStream pem流
+	 * @return {@link PublicKey}
+	 * @since 5.2.5
+	 * @see PemUtil#readPemPublicKey(InputStream)
+	 */
+	public static PublicKey readPemPublicKey(InputStream pemStream) {
+		return PemUtil.readPemPublicKey(pemStream);
+	}
+
+	/**
+	 * Java中的PKCS#8格式私钥转换为OpenSSL支持的PKCS#1格式
+	 *
+	 * @param privateKey PKCS#8格式私钥
+	 * @return PKCS#1格式私钥
+	 * @since 5.5.9
+	 */
+	public static byte[] toPkcs1(PrivateKey privateKey){
+		final PrivateKeyInfo pkInfo = PrivateKeyInfo.getInstance(privateKey.getEncoded());
 		try {
-			return (ECPrivateKeyParameters) ECUtil.generatePrivateKeyParameter(privateKey);
-		} catch (InvalidKeyException e) {
-			throw new CryptoException(e);
+			return pkInfo.parsePrivateKey().toASN1Primitive().getEncoded();
+		} catch (IOException e) {
+			throw new IORuntimeException(e);
 		}
 	}
 
 	/**
-	 * 将X，Y曲线点编码为bytes
+	 * Java中的X.509格式公钥转换为OpenSSL支持的PKCS#1格式
 	 *
-	 * @param xBytes      X坐标bytes
-	 * @param yBytes      Y坐标bytes
-	 * @param curveLength 曲线编码后的长度
-	 * @return 编码bytes
+	 * @param publicKey X.509格式公钥
+	 * @return PKCS#1格式公钥
+	 * @since 5.5.9
 	 */
-	private static byte[] encodePoint(byte[] xBytes, byte[] yBytes, int curveLength) {
-		xBytes = fixLength(curveLength, xBytes);
-		yBytes = fixLength(curveLength, yBytes);
-		final byte[] encodedPubKey = new byte[1 + xBytes.length + yBytes.length];
-
-		// 压缩类型：无压缩
-		encodedPubKey[0] = 0x04;
-		System.arraycopy(xBytes, 0, encodedPubKey, 1, xBytes.length);
-		System.arraycopy(yBytes, 0, encodedPubKey, 1 + xBytes.length, yBytes.length);
-
-		return encodedPubKey;
-	}
-
-	/**
-	 * 获取Curve长度
-	 *
-	 * @param curve {@link ECCurve}
-	 * @return Curve长度
-	 */
-	private static int getCurveLength(ECCurve curve) {
-		return (curve.getFieldSize() + 7) / 8;
-	}
-
-	/**
-	 * 修正长度
-	 *
-	 * @param curveLength 修正后的长度
-	 * @param src         bytes
-	 * @return 修正后的bytes
-	 */
-	private static byte[] fixLength(int curveLength, byte[] src) {
-		if (src.length == curveLength) {
-			return src;
+	public static byte[] toPkcs1(PublicKey publicKey){
+		final SubjectPublicKeyInfo spkInfo = SubjectPublicKeyInfo
+				.getInstance(publicKey.getEncoded());
+		try {
+			return spkInfo.parsePublicKey().getEncoded();
+		} catch (IOException e) {
+			throw new IORuntimeException(e);
 		}
-
-		byte[] result = new byte[curveLength];
-		if (src.length > curveLength) {
-			// 裁剪末尾的指定长度
-			System.arraycopy(src, src.length - result.length, result, 0, result.length);
-		} else {
-			// 放置于末尾
-			System.arraycopy(src, 0, result, result.length - src.length, src.length);
-		}
-		return result;
 	}
 }
